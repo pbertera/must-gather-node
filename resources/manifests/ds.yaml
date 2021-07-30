@@ -1,0 +1,49 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: NODE_MUST_GATHER_DS
+  namespace: NODE_MUST_GATHER_NS
+  labels:
+spec:
+  selector:
+    matchLabels:
+      name: NODE_MUST_GATHER_DS
+  template:
+    metadata:
+      labels:
+        name: NODE_MUST_GATHER_DS
+    spec:
+      serviceaccount: NODE_MUST_GATHER_SA
+      serviceAccountName: NODE_MUST_GATHER_SA
+      terminationGracePeriodSeconds: 0
+      hostNetwork: true
+      containers:
+      - name: cointainer-00
+        image: NODE_MUST_GATHER_IMAGE
+        command: ["/bin/bash", "-c", "echo ok > /tmp/healthy && sleep INF"]
+        imagePullPolicy: IfNotPresent
+        resources:
+          limits:
+            cpu: "100m"
+            memory: "50Mi"
+        readinessProbe:
+          exec:
+            command:
+              - cat
+              - /tmp/healthy
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+          - mountPath: /host
+            name: host
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        hostNetwork: true
+        hostPID: true
+      volumes:
+      - name: host
+        hostPath:
+          path: /
+          type: Directory

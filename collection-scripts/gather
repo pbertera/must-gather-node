@@ -1,0 +1,103 @@
+#!/bin/bash
+
+NODE_MUST_GATHER_DS=node-must-gather-daemonset
+NODE_MUST_GATHER_NS=node-gather
+NODE_MUST_GATHER_SA=node-gather
+
+check_node_gather_pods_ready() {
+    line=$(oc get ds $NODE_MUST_GATHER_DS -o=custom-columns=DESIRED:.status.desiredNumberScheduled,READY:.status.numberReady --no-headers -n $NODE_MUST_GATHER_NS)
+
+    IFS=$' '
+    read -r desired ready <<< "$line"
+    IFS=$'\n'
+
+    if [[ "$desired" != "0" ]] && [[ "$ready" == "$desired" ]]
+    then
+       return 0
+    else
+       return 1
+    fi
+}
+
+IFS=$'\n'
+
+BASE_COLLECTION_PATH="/must-gather"
+NODES_PATH=${BASE_COLLECTION_PATH}/nodes
+mkdir -p ${NODES_PATH}
+
+NS_MANIFEST="/var/lib/node-must-gather/manifests/ns.yaml"
+SA_MANIFEST="/var/lib/node-must-gather/manifests/sa.yaml"
+DS_MANIFEST="/var/lib/node-must-gather/manifests/ds.yaml"
+FILES_TO_COPY="/var/lib/node-must-gather/files"
+COMMANDS_TO_EXECUTE="/var/lib/node-must-gather/commands"
+
+NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+POD_NAME=$(oc get pods -l app=must-gather -n "$NAMESPACE" -o'custom-columns=name:metadata.name' --no-headers)
+NODE_MUST_GATHER_IMAGE=$(oc get pod -n "$NAMESPACE" "$POD_NAME" -o jsonpath="{.spec.containers[0].image}")
+
+sed -i -e "s#NODE_MUST_GATHER_NS#$NODE_MUST_GATHER_NS#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
+sed -i -e "s#NODE_MUST_GATHER_SA#$NODE_MUST_GATHER_SA#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
+sed -i -e "s#NODE_MUST_GATHER_DS#$NODE_MUST_GATHER_DS#" $DS_MANIFEST
+sed -i -e "s#NODE_MUST_GATHER_IMAGE#$NODE_MUST_GATHER_IMAGE#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
+
+oc create -f $NS_MANIFEST
+oc create -f $SA_MANIFEST
+
+oc adm policy add-scc-to-user privileged -n $NODE_MUST_GATHER_NS -z $NODE_MUST_GATHER_SA
+oc create -f $DS_MANIFEST
+
+COUNTER=0
+until check_node_gather_pods_ready || [ $COUNTER -eq 300 ]; do
+    if [[ $(( COUNTER % 20 )) == 0 ]]; then
+        echo "Waiting for $NODE_MUST_GATHER_DS to be ready"
+    fi
+    (( COUNTER++ ))
+    sleep 1
+done
+
+for line in $(oc get pod -o=custom-columns=NODE:.spec.nodeName --no-headers --field-selector=status.phase!=Running -n $NODE_MUST_GATHER_NS)
+do
+    echo "Failed to collect data from node ${line} due to pod scheduling failure." >> ${NODES_PATH}/skipped_nodes.txt
+done
+
+gather_single_pod() {
+    line="$1"
+
+    node=$(echo "$line" | awk -F ' ' '{print $1}')
+    pod=$(echo "$line" | awk -F ' ' '{print $2}')
+    node_path=${NODES_PATH}/${node}
+    node_type=$(oc get nodes $node -o=custom-columns="OS":".metadata.labels.node\.openshift\.io/os_id" --no-headers)
+
+    mkdir -p "${node_path}/"{commands,files}
+
+    echo "$pod - Gathering node '$node' data, node type is $node_type"
+    if [ -f "${FILES_TO_COPY}.${node_type}" ]; then
+        echo "$pod - Found $node_type specific list of file to gather"
+        FILES_TO_COPY=${FILES_TO_COPY}.${node_type}
+    fi
+
+    rsync --files-from="$FILES_TO_COPY" --copy-links --relative --archive --no-owner --no-group --omit-dir-times --numeric-ids --rsh="oc rsh -n $NODE_MUST_GATHER_NS" "${pod}":/host/ "${node_path}/files/"
+
+
+    if [ -f "${COMMANDS_TO_EXECUTE}.${node_type}" ]; then
+        echo "$pod - Found $node_type specific list of commands"
+        COMMANDS_TO_EXECUTE=${COMMANDS_TO_EXECUTE}.${node_type}
+    fi
+
+    for exe in $(cat "$COMMANDS_TO_EXECUTE"); do
+	outfile=${exe// /_}
+        [ -n "$DEBUG" ] && echo "DEBUG: executing command '$exe'"
+        oc exec -n $NODE_MUST_GATHER_NS $pod -- /bin/sh -c "$exe" > "${node_path}/commands/${outfile}"
+    done
+}
+
+for line in $(oc get pod -o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name --no-headers --field-selector=status.phase=Running -n $NODE_MUST_GATHER_NS)
+do
+    gather_single_pod "$line" &
+done
+
+wait
+
+oc delete -f $DS_MANIFEST
+oc delete -f $SA_MANIFEST
+oc delete -f $NS_MANIFEST
