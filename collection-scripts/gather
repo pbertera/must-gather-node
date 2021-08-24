@@ -32,8 +32,12 @@ FILES_TO_COPY="/var/lib/node-must-gather/files"
 COMMANDS_TO_EXECUTE="/var/lib/node-must-gather/commands"
 
 NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-POD_NAME=$(oc get pods -l app=must-gather -n "$NAMESPACE" -o'custom-columns=name:metadata.name' --no-headers)
-NODE_MUST_GATHER_IMAGE=$(oc get pod -n "$NAMESPACE" "$POD_NAME" -o jsonpath="{.spec.containers[0].image}")
+
+# This will fail in case of multiple --image: more than one pod is running on the musty-gather NS
+# POD_NAME=$(oc get pods -l app=must-gather -n "$NAMESPACE" -o'custom-columns=name:metadata.name' --no-headers)
+# using the HOSTNAME is set to the pod name
+POD_NAME=$HOSTNAME
+NODE_MUST_GATHER_IMAGE=$(oc get pod -n "$NAMESPACE" "$POD_NAME" -o jsonpath="{.spec.containers[?(@.name=='gather')].image}")
 
 sed -i -e "s#NODE_MUST_GATHER_NS#$NODE_MUST_GATHER_NS#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
 sed -i -e "s#NODE_MUST_GATHER_SA#$NODE_MUST_GATHER_SA#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
@@ -57,7 +61,9 @@ done
 
 for line in $(oc get pod -o=custom-columns=NODE:.spec.nodeName --no-headers --field-selector=status.phase!=Running -n $NODE_MUST_GATHER_NS)
 do
-    echo "Failed to collect data from node ${line} due to pod scheduling failure." >> ${NODES_PATH}/skipped_nodes.txt
+    if [ "$line" != "<none>" ]; then
+        echo "Failed to collect data from node ${line} due to pod scheduling failure." >> ${NODES_PATH}/skipped_nodes.txt
+    fi
 done
 
 gather_single_pod() {
@@ -85,7 +91,7 @@ gather_single_pod() {
     fi
 
     for exe in $(cat "$COMMANDS_TO_EXECUTE"); do
-	outfile=${exe// /_}
+	    outfile=${exe// /_}
         [ -n "$DEBUG" ] && echo "DEBUG: executing command '$exe'"
         oc exec -n $NODE_MUST_GATHER_NS $pod -- /bin/sh -c "$exe" > "${node_path}/commands/${outfile}"
     done
