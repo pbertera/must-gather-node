@@ -1,7 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 NODE_MUST_GATHER_DS=node-must-gather-daemonset
 NODE_MUST_GATHER_NS=node-gather
+NODE_MUST_GATHER_NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
 NODE_MUST_GATHER_SA=node-gather
 
 check_node_gather_pods_ready() {
@@ -22,6 +23,11 @@ check_node_gather_pods_ready() {
 IFS=$'\n'
 
 BASE_COLLECTION_PATH="/must-gather"
+# generate /must-gather/version file
+. version
+echo "must-gather-node" > ${BASE_COLLECTION_PATH}/version
+version >> ${BASE_COLLECTION_PATH}/version
+
 NODES_PATH=${BASE_COLLECTION_PATH}/nodes
 mkdir -p ${NODES_PATH}
 
@@ -44,7 +50,8 @@ sed -i -e "s#NODE_MUST_GATHER_SA#$NODE_MUST_GATHER_SA#" $NS_MANIFEST $SA_MANIFES
 sed -i -e "s#NODE_MUST_GATHER_DS#$NODE_MUST_GATHER_DS#" $DS_MANIFEST
 sed -i -e "s#NODE_MUST_GATHER_IMAGE#$NODE_MUST_GATHER_IMAGE#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
 
-oc create -f $NS_MANIFEST
+# Create the namespace only if not exisisting
+oc get ns $NS_MANIFEST -o custom-columns=name:metadata.name --no-headers > /dev/null 2>&1 || oc create -f $NS_MANIFEST
 oc create -f $SA_MANIFEST
 
 oc adm policy add-scc-to-user privileged -n $NODE_MUST_GATHER_NS -z $NODE_MUST_GATHER_SA
@@ -106,4 +113,6 @@ wait
 
 oc delete -f $DS_MANIFEST
 oc delete -f $SA_MANIFEST
-oc delete -f $NS_MANIFEST
+
+# Delete the namespace only if different from the must-gather namespace
+# oc delete -f $NS_MANIFEST

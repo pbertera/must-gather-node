@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+function version() {
+  version="0.1-alpha"
+  echo ${version}
+}
