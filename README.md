@@ -1,14 +1,15 @@
 # OpenShift must-gather node
 
-This repo contains an image suitable to build easy to customize [must-gather](https://github.com/openshift/must-gather) images that can be used to retrieve node-specific informations and data.
+This repo contains an image suitable to build a customized [must-gather](https://github.com/openshift/must-gather) image that can be used to retrieve node-specific informations and data.
 
-This image deploys a temporary DaemonSet on the cluster, the deployed container execute commands on the node and retrive the defined files.
+This image deploys a temporary `DaemonSet` on the cluster. The deployed pods are used to execute custom commands on the nodes and retrieve specific files.
 
 - Executed commands output are saved into the folder `<MUST-GATHER-ROOT>/nodes/<NODE-NAME>/commands/`
 - Files retrieved from the nodes are saved into the folder `<MUST-GATHER-ROOT>/nodes/<NODE-NAME>/files/`
 
-This must-gather image is designed to easily define:
-- a list of files to gather from all the nodes
+Customizing this must-gather image is easy do define:
+
+- a list of files to gather, from all the nodes
 - a list of files to gather, specific per node OS
 - a list of files to gather, specific to the node role
 - a list of commands to execute on all the nodes
@@ -21,7 +22,8 @@ This image can be modified to execute custom commands and gather specific files.
 
 ### Defining the commands
 
-Commands to execute on the nodes can be defined editing the file `resources/commands`. This file contains a lis of commands, each per line.
+Commands to execute on the nodes can be defined editing the file `resources/commands*`.
+Those files should containe a list of commands, each per line.
 
 Example:
 
@@ -36,10 +38,11 @@ dmesg
 
 For example:
 
-- the commands from the file `resources/commands.role-master` is executed only on master nodes
-- on a node with label `node.openshift.io/os_id: rhel` the OS-specific commands are defined into the file `resources/commands.os-rhel`
-- on a node with label `node.openshift.io/os_id: rhcos` the OS-specific commands are defined into the file `resources/commands.os-rhcos`
-- if the label `node.openshift.io/os_id` is missing or is not matching any `resources/commands.*`, only the commands from `resources/commands` will be executed
+- the file `resources/commands` contains a list of commands to execute on all the nodes
+- the commands from the file `resources/commands.role-master` are executed only on master nodes
+- the commands from the file `resources/commands.os-rhel` are executed only on RHEL nodes (nodes with label `node.openshift.io/os_id: rhel`)
+- the commands from the file `resources/commands.os-rhcos` are executed only on RHCOS nodes (nodes with label `node.openshift.io/os_id: rhcos`)
+- the commands from the file `resources/commands.role-master` are executed only on nodes with role master
 
 ### Defining the files to retrieve
 
@@ -54,6 +57,13 @@ Example:
 * Is possible to define an OS-specific list of files to gather creating the file `resources/files.os-<OS-TYPE>`. Eg. `resources/commands.files-rhcos`
   The node operating system type is determined by the node label `node.openshift.io/os_id`
 * Is possible to define a role-specific list of files to gather creating the file `resources/files.role-<ROLE>`. Eg. `resources/commands.files-master`
+
+For example:
+
+- the file `resources/files` contains a list of files and directory to retrieve from all the nodes
+- the file `resources/files.role-master` contains a list of files and directory to retrieve from master nodes
+- the file `resources/files.os-rhel` contains a list of files and directory to retrieve from RHEL nodes (nodes with label `node.openshift.io/os_id: rhel`)
+- the file `resources/files.os-rhcos` contains a list of files and directory to retrieve from RHCOS nodes (nodes with label `node.openshift.io/os_id: rhcos`)
 
 ## Usage
 
