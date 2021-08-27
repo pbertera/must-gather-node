@@ -69,6 +69,13 @@ do
     fi
 done
 
+mangle_command() {
+    command_name="$@"
+    command_name=${command_name// /_}
+    command_name=${command_name//\//.}
+    echo $command_name
+}
+
 gather_single_pod() {
     line="$1"
 
@@ -110,7 +117,7 @@ gather_single_pod() {
 
     run_command() {
         for exe in $(cat "$COMMANDS_TO_EXECUTE"); do
-	        outfile=${exe// /_}
+            outfile=$(mangle_command $exe)
             [ -n "$DEBUG" ] && echo "DEBUG: Node pod $pod: executing command '$exe'"
             oc exec -n $NODE_MUST_GATHER_NS $pod -- /bin/sh -c "chroot /host $exe" > "${node_path}/commands/${outfile}"
         done

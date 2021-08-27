@@ -1,1 +1,1 @@
-echo this is master
+sudo podman run --volume /var/lib/etcd:/var/lib/etcd:Z quay.io/openshift-scale/etcd-perf
