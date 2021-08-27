@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+BASE_COLLECTION_PATH="/must-gather"
+
+# Named resource list, eg. ns/openshift-config
+# named_resources=()
+
+# Resource groups list, eg. pods
+group_resources=()
+
+# Custom Resources Definitions
+group_resources+=(crd)
+
+# Machine Config
+grouped_resources+=(mc)
+
+
+
+# Run the Collection of Resources using inspect
+# running across all-namespaces for the few "Autoscaler" resources.
+# oc adm inspect --dest-dir must-gather "${named_resources[@]}"
+group_resources_text=$(IFS=, ; echo "${group_resources[*]}")
+oc adm inspect --dest-dir must-gather "${group_resources_text}"
+
+sync

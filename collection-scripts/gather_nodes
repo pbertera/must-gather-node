@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+
+BASE_COLLECTION_PATH="/must-gather"
+NODE_MUST_GATHER_DS=node-must-gather-daemonset
+NODE_MUST_GATHER_NS=node-gather
+NODE_MUST_GATHER_NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+NODE_MUST_GATHER_SA=node-gather
+NS_MANIFEST="/var/lib/node-must-gather/manifests/ns.yaml"
+SA_MANIFEST="/var/lib/node-must-gather/manifests/sa.yaml"
+DS_MANIFEST="/var/lib/node-must-gather/manifests/ds.yaml"
+FILES_TO_GATHER_PREFIX="/var/lib/node-must-gather/files"
+COMMANDS_TO_EXECUTE_PREFIX="/var/lib/node-must-gather/commands"
+
+check_node_gather_pods_ready() {
+    line=$(oc get ds $NODE_MUST_GATHER_DS -o=custom-columns=DESIRED:.status.desiredNumberScheduled,READY:.status.numberReady --no-headers -n $NODE_MUST_GATHER_NS)
+
+    IFS=$' '
+    read -r desired ready <<< "$line"
+    IFS=$'\n'
+
+    if [[ "$desired" != "0" ]] && [[ "$ready" == "$desired" ]]
+    then
+       return 0
+    else
+       return 1
+    fi
+}
+
+IFS=$'\n'
+
+NODES_PATH=${BASE_COLLECTION_PATH}/nodes
+mkdir -p ${NODES_PATH}
+
+# Get the must-gather namespace
+NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+# This will fail in case of multiple --image: more than one pod is running on the musty-gather NS
+# POD_NAME=$(oc get pods -l app=must-gather -n "$NAMESPACE" -o'custom-columns=name:metadata.name' --no-headers)
+# using the HOSTNAME is set to the pod name
+POD_NAME=$HOSTNAME
+NODE_MUST_GATHER_IMAGE=$(oc get pod -n "$NAMESPACE" "$POD_NAME" -o jsonpath="{.spec.containers[?(@.name=='gather')].image}")
+
+sed -i -e "s#NODE_MUST_GATHER_NS#$NODE_MUST_GATHER_NS#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
+sed -i -e "s#NODE_MUST_GATHER_SA#$NODE_MUST_GATHER_SA#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
+sed -i -e "s#NODE_MUST_GATHER_DS#$NODE_MUST_GATHER_DS#" $DS_MANIFEST
+sed -i -e "s#NODE_MUST_GATHER_IMAGE#$NODE_MUST_GATHER_IMAGE#" $NS_MANIFEST $SA_MANIFEST $DS_MANIFEST
+
+# Create the namespace only if not exisisting
+oc get ns $NODE_MUST_GATHER_NS -o custom-columns=name:metadata.name --no-headers > /dev/null 2>&1 || oc create -f $NS_MANIFEST
+oc create -f $SA_MANIFEST
+
+oc adm policy add-scc-to-user privileged -n $NODE_MUST_GATHER_NS -z $NODE_MUST_GATHER_SA
+oc create -f $DS_MANIFEST
+
+COUNTER=0
+until check_node_gather_pods_ready || [ $COUNTER -eq 300 ]; do
+    if [[ $(( COUNTER % 20 )) == 0 ]]; then
+        echo "Waiting for $NODE_MUST_GATHER_DS to be ready"
+    fi
+    echo .
+    (( COUNTER++ ))
+    sleep 1
+done
+
+for line in $(oc get pod -o=custom-columns=NODE:.spec.nodeName --no-headers --field-selector=status.phase!=Running -n $NODE_MUST_GATHER_NS)
+do
+    if [ "$line" != "<none>" ]; then
+        echo "Failed to collect data from node ${line} due to pod scheduling failure." >> ${NODES_PATH}/skipped_nodes.txt
+    fi
+done
+
+gather_single_pod() {
+    line="$1"
+
+    node=$(echo "$line" | awk -F ' ' '{print $1}')
+    pod=$(echo "$line" | awk -F ' ' '{print $2}')
+    node_path=${NODES_PATH}/${node}
+    node_type=$(oc get nodes $node -o=custom-columns="OS":".metadata.labels.node\.openshift\.io/os_id" --no-headers)
+
+    mkdir -p "${node_path}/"{commands,files}
+
+    echo "Node pod $pod: Gathering node '$node' data, node OS is '$node_type'"
+
+    sync_files() {
+        rsync --files-from="$FILES_TO_GATHER" --copy-links --relative --archive --no-owner --no-group --omit-dir-times --numeric-ids --rsh="oc rsh -n $NODE_MUST_GATHER_NS" "${pod}":/host/ "${node_path}/files/"
+    }
+
+    # Gather the common file
+    if [ -f "${FILES_TO_GATHER_PREFIX}" ]; then
+        echo "Node pod $pod: Found common list of file to gather"
+        FILES_TO_GATHER=${FILES_TO_GATHER_PREFIX}
+        sync_files
+    fi
+
+    # Gather the role-specific file
+    for role in $(get_node_role $node); do
+        if [ -f "${FILES_TO_GATHER_PREFIX}.role-${role}" ]; then
+            echo "Node pod $pod: Found role '$role' specific list of file to gather"
+            FILES_TO_GATHER=${FILES_TO_GATHER_PREFIX}.role-${role}
+            sync_files
+        fi
+    done
+
+    # Gather the OS-specific file
+    if [ -f "${FILES_TO_GATHER_PREFIX}.os-${node_type}" ]; then
+        echo "Node pod $pod: Found '$node_type' specific list of file to gather"
+        FILES_TO_GATHER=${FILES_TO_GATHER_PREFIX}.os-${node_type}
+        sync_files
+    fi
+
+    run_command() {
+        for exe in $(cat "$COMMANDS_TO_EXECUTE"); do
+	        outfile=${exe// /_}
+            [ -n "$DEBUG" ] && echo "DEBUG: Node pod $pod: executing command '$exe'"
+            oc exec -n $NODE_MUST_GATHER_NS $pod -- /bin/sh -c "chroot /host $exe" > "${node_path}/commands/${outfile}"
+        done
+    }
+
+    # Execute the common commands
+    if [ -f "${COMMANDS_TO_EXECUTE_PREFIX}" ]; then
+        echo "Node pod $pod: Found common commands"
+        COMMANDS_TO_EXECUTE=${COMMANDS_TO_EXECUTE_PREFIX}
+        run_command
+    fi
+
+    # Gather the role-specific commands
+    for role in $(get_node_role $node); do
+        if [ -f "${COMMANDS_TO_EXECUTE_PREFIX}.role-${role}" ]; then
+            echo "Node pod $pod: Found role '$role' specific commands"
+            COMMANDS_TO_EXECUTE=${COMMANDS_TO_EXECUTE_PREFIX}.role-${role}
+            run_command
+        fi
+    done
+
+    # Execute the OS-specific commands
+    if [ -f "${COMMANDS_TO_EXECUTE_PREFIX}.os-${node_type}" ]; then
+        echo "Node pod $pod: Found '$node_type' specific commands"
+        COMMANDS_TO_EXECUTE=${COMMANDS_TO_EXECUTE_PREFIX}.os-${node_type}
+        run_command
+    fi
+}
+
+# $1 = node-name
+# Returns the roles of a given node
+get_node_role(){
+    node=$1
+    if oc get node $node -o custom-columns=name:.metadata.name --no-headers >> /dev/null 2>&1; then 
+        oc get node $node -o go-template='{{range $l,$v := .metadata.labels}}{{$l}}:{{$v}}{{"\n"}}{{end}}' | grep node-role.kubernetes.io | sed -e 's/node-role.kubernetes.io\/\(.*\):/\1/'
+    else
+        echo "ERROR: Node $node not found"
+    fi
+}
+
+for line in $(oc get pod -l name=${NODE_MUST_GATHER_DS} -o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name --no-headers --field-selector=status.phase=Running -n $NODE_MUST_GATHER_NS)
+do
+    gather_single_pod "$line" &
+done
+
+wait
+
+oc delete -f $DS_MANIFEST
+oc delete -f $SA_MANIFEST
+
+# Delete the namespace only if different from the must-gather namespace
+# oc delete -f $NS_MANIFEST

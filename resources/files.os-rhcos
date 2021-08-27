@@ -1,0 +1,7 @@
+/etc/passwd
+/etc/groups
+/etc/resolv.conf
+/etc/redhat-release
+/not/exists
+/var/log/
+/home/core/.ssh/

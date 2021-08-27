@@ -1,0 +1,6 @@
+ip addr
+ip route
+uptime
+echo RHEL
+
+systemctl status NetworkManager
