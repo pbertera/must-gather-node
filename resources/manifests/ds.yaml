@@ -18,6 +18,7 @@ spec:
       serviceAccountName: NODE_MUST_GATHER_SA
       terminationGracePeriodSeconds: 0
       hostNetwork: true
+      hostPID: true
       containers:
       - name: cointainer-00
         image: NODE_MUST_GATHER_IMAGE
@@ -40,8 +41,6 @@ spec:
         securityContext:
           privileged: true
           runAsUser: 0
-        hostNetwork: true
-        hostPID: true
       volumes:
       - name: host
         hostPath:
